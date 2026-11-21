@@ -1,0 +1,1201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Interactive Circuit Breaker pattern simulator (pybreaker): watch a breaker trip, fast-fail to cache, and recover against a failing database.">
+    <title>Circuit Breaker Pattern Simulator</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts: Inter & JetBrains Mono -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+    <!-- Tone.js for procedural sound effects -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #090d16;
+            color: #e2e8f0;
+            overflow-x: hidden;
+        }
+        .font-mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+        /* Custom scrollbar for terminal logs */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0f172a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #475569;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        .glow-emerald {
+            box-shadow: 0 0 20px rgba(16, 185, 129, 0.25);
+        }
+        .glow-rose {
+            box-shadow: 0 0 20px rgba(244, 63, 94, 0.3);
+        }
+        .glow-amber {
+            box-shadow: 0 0 20px rgba(245, 158, 11, 0.3);
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col justify-between selection:bg-indigo-500 selection:text-white">
+
+    <!-- Top Navigation / Header -->
+    <header class="border-b border-slate-800/80 bg-slate-900/70 backdrop-blur-md sticky top-0 z-30">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex flex-wrap items-center justify-between gap-4">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-center text-indigo-400">
+                    <!-- Circuit Icon SVG -->
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="text-lg sm:text-xl font-bold tracking-tight text-white flex items-center gap-2">
+                        Circuit Breaker Simulator
+                        <span class="text-xs font-mono px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">pybreaker</span>
+                    </h1>
+                    <p class="text-xs text-slate-400 hidden sm:block">Interactive Fault-Tolerance & Cascading Failure Prevention Lab</p>
+                </div>
+            </div>
+
+            <!-- Live State Pill & Audio Toggle -->
+            <div class="flex items-center gap-3">
+                <button id="audioToggleBtn" aria-label="Toggle sound effects" class="p-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 text-slate-300 transition flex items-center gap-2 text-xs font-medium" title="Toggle Sound Effects">
+                    <span id="audioIcon">🔇</span>
+                    <span class="hidden sm:inline" id="audioLabel">Sound Off</span>
+                </button>
+
+                <div id="headerStateBadge" class="px-4 py-2 rounded-xl border font-mono text-xs sm:text-sm font-bold tracking-wider uppercase flex items-center gap-2 bg-emerald-500/10 border-emerald-500/40 text-emerald-400 glow-emerald transition-all duration-300">
+                    <span id="headerStateDot" class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span id="headerStateText">CLOSED</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Dashboard Grid -->
+    <main class="max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 flex-grow grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+        <!-- Left / Center Visualization & Controls (8 Columns on Desktop) -->
+        <div class="lg:col-span-8 flex flex-col gap-6">
+
+            <!-- HTML5 Interactive Canvas Stage -->
+            <div class="relative rounded-2xl bg-slate-900/90 border border-slate-800 shadow-2xl overflow-hidden flex flex-col">
+                <!-- Canvas Top Overlay HUD -->
+                <div class="px-4 py-3 border-b border-slate-800/80 bg-slate-950/50 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div class="flex items-center gap-4">
+                        <span class="text-slate-400 font-medium">Topology: <strong class="text-slate-200">Client → Breaker → Primary DB / Cache</strong></span>
+                    </div>
+                    <div class="flex items-center gap-4 font-mono">
+                        <span class="text-slate-400">Failures: <strong id="hudFailures" class="text-rose-400">0 / 3</strong></span>
+                        <span class="text-slate-400">Reset Timer: <strong id="hudTimer" class="text-amber-400">Idle</strong></span>
+                    </div>
+                </div>
+
+                <!-- Responsive Canvas Container -->
+                <div id="canvasContainer" class="relative w-full h-[300px] sm:h-[360px] bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:20px_20px]">
+                    <canvas id="simCanvas"></canvas>
+
+                    <!-- Floating State Explanation Banner -->
+                    <div id="stateBanner" class="absolute bottom-3 left-3 right-3 sm:right-auto sm:left-4 sm:max-w-sm bg-slate-950/90 backdrop-blur-md border border-slate-800 rounded-xl p-3 text-xs text-slate-300 shadow-lg pointer-events-none transition-all">
+                        <div class="font-semibold text-emerald-400 mb-0.5" id="bannerTitle">Circuit CLOSED (Normal Operation)</div>
+                        <div class="text-slate-400 leading-relaxed" id="bannerDesc">Requests flow directly to the Primary Database. Consecutive failures are counted up to fail_max.</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Interactive Control Deck -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+                <!-- Traffic & Actions Card -->
+                <div class="rounded-2xl bg-slate-900/90 border border-slate-800 p-5 flex flex-col justify-between gap-4 shadow-lg">
+                    <div>
+                        <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-2">
+                            <span>⚡</span> Traffic & Request Controls
+                        </h2>
+                        <div class="grid grid-cols-2 gap-3">
+                            <button id="sendSingleBtn" class="col-span-2 sm:col-span-1 py-3 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white font-semibold text-sm shadow-lg shadow-indigo-600/20 transition flex items-center justify-center gap-2">
+                                <span>Send Request</span>
+                                <span class="text-xs opacity-75 font-mono">[Space]</span>
+                            </button>
+
+                            <button id="autoTrafficBtn" class="col-span-2 sm:col-span-1 py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-semibold text-sm transition flex items-center justify-center gap-2">
+                                <span id="autoTrafficDot" class="w-2 h-2 rounded-full bg-slate-500"></span>
+                                <span id="autoTrafficLabel">Auto Traffic: OFF</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Primary Database Health Switch -->
+                    <div class="pt-3 border-t border-slate-800/80">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Primary Database Status</span>
+                            <span id="dbStatusText" class="text-xs font-mono font-bold text-rose-400">OFFLINE (Failing)</span>
+                        </div>
+                        <button id="toggleDbBtn" class="w-full py-3 px-4 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-rose-300 font-semibold text-sm transition flex items-center justify-between">
+                            <span class="flex items-center gap-2">
+                                <span id="dbStatusIcon">💥</span>
+                                <span id="dbToggleText">Database is DOWN — Click to Recover</span>
+                            </span>
+                            <span class="text-xs font-mono px-2 py-0.5 rounded bg-slate-950/60">Toggle</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- PyBreaker Parameters & Scenario Presets -->
+                <div class="rounded-2xl bg-slate-900/90 border border-slate-800 p-5 flex flex-col justify-between gap-4 shadow-lg">
+                    <div>
+                        <div class="flex items-center justify-between mb-3">
+                            <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400 flex items-center gap-2">
+                                <span>⚙️</span> Breaker Configuration
+                            </h2>
+                            <button id="resetSimBtn" class="text-xs text-slate-400 hover:text-white underline transition">Reset All</button>
+                        </div>
+
+                        <!-- fail_max slider -->
+                        <div class="mb-4">
+                            <div class="flex justify-between text-xs mb-1.5">
+                                <label for="failMaxSlider" class="font-mono text-slate-300">fail_max</label>
+                                <span id="failMaxVal" class="font-mono font-bold text-indigo-400">3 failures</span>
+                            </div>
+                            <input id="failMaxSlider" type="range" min="1" max="10" value="3" class="w-full accent-indigo-500 bg-slate-800 h-2 rounded-lg cursor-pointer">
+                        </div>
+
+                        <!-- reset_timeout slider -->
+                        <div>
+                            <div class="flex justify-between text-xs mb-1.5">
+                                <label for="timeoutSlider" class="font-mono text-slate-300">reset_timeout</label>
+                                <span id="timeoutVal" class="font-mono font-bold text-amber-400">10 seconds</span>
+                            </div>
+                            <input id="timeoutSlider" type="range" min="3" max="20" value="10" class="w-full accent-amber-500 bg-slate-800 h-2 rounded-lg cursor-pointer">
+                        </div>
+                    </div>
+
+                    <!-- Demo Scenario Button -->
+                    <div class="pt-3 border-t border-slate-800/80">
+                        <button id="runScriptedDemoBtn" class="w-full py-2.5 px-4 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 font-semibold text-xs sm:text-sm transition flex items-center justify-center gap-2">
+                            <span>▶ Run Automated Python Script Demo</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Metrics Summary Strip -->
+            <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
+                <div class="rounded-2xl bg-slate-900/90 border border-slate-800 p-4">
+                    <div class="text-xs text-slate-400 mb-1">Total Requests</div>
+                    <div id="statTotal" class="text-2xl font-bold font-mono text-white">0</div>
+                </div>
+                <div class="rounded-2xl bg-slate-900/90 border border-slate-800 p-4">
+                    <div class="text-xs text-slate-400 mb-1">DB Succeeded</div>
+                    <div id="statSuccess" class="text-2xl font-bold font-mono text-emerald-400">0</div>
+                </div>
+                <div class="rounded-2xl bg-slate-900/90 border border-slate-800 p-4">
+                    <div class="text-xs text-slate-400 mb-1">DB Errors (500)</div>
+                    <div id="statFailed" class="text-2xl font-bold font-mono text-rose-400">0</div>
+                </div>
+                <div class="rounded-2xl bg-slate-900/90 border border-slate-800 p-4">
+                    <div class="text-xs text-slate-400 mb-1">Fast-Fail Fallbacks</div>
+                    <div id="statBlocked" class="text-2xl font-bold font-mono text-amber-400">0</div>
+                </div>
+                <div class="rounded-2xl bg-slate-900/90 border border-slate-800 p-4">
+                    <div class="text-xs text-slate-400 mb-1">Success Rate</div>
+                    <div id="statSuccessRate" class="text-2xl font-bold font-mono text-sky-400">—</div>
+                </div>
+                <div class="rounded-2xl bg-slate-900/90 border border-slate-800 p-4">
+                    <div class="text-xs text-slate-400 mb-1">Circuit Trips</div>
+                    <div id="statTrips" class="text-2xl font-bold font-mono text-rose-400">0</div>
+                </div>
+            </div>
+
+            <!-- State Timeline -->
+            <div class="rounded-2xl bg-slate-900/90 border border-slate-800 p-5 shadow-lg">
+                <div class="flex items-center justify-between mb-3">
+                    <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400 flex items-center gap-2">
+                        <span>🕒</span> State Timeline
+                    </h2>
+                    <button id="clearTimelineBtn" class="text-xs text-slate-400 hover:text-white underline transition">Clear</button>
+                </div>
+                <div id="timelineList" class="font-mono text-xs space-y-1.5 overflow-y-auto max-h-48 pr-1">
+                    <div class="text-slate-500 timeline-empty">No state changes yet — send a request or run the demo.</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Column: Live Execution Console & Python Code Inspector (4 Columns) -->
+        <div class="lg:col-span-4 flex flex-col gap-6">
+
+            <!-- Live Event Console -->
+            <div class="rounded-2xl bg-slate-950 border border-slate-800 flex flex-col h-[340px] lg:h-[380px] shadow-xl overflow-hidden">
+                <div class="px-4 py-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        <span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span>
+                        <span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
+                        <span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                        <span class="ml-1 text-xs font-mono font-semibold text-slate-300">execution_logs.stdout</span>
+                    </div>
+                    <button id="clearLogsBtn" class="text-xs text-slate-400 hover:text-white font-mono">Clear</button>
+                </div>
+                <div id="consoleOutput" aria-live="polite" class="p-4 font-mono text-xs space-y-2 overflow-y-auto flex-grow leading-relaxed">
+                    <div class="text-slate-500"># Simulator initialized. Ready for traffic...</div>
+                    <div class="text-slate-400">db_breaker = CircuitBreaker(fail_max=<span class="text-indigo-400">3</span>, reset_timeout=<span class="text-amber-400">10</span>)</div>
+                </div>
+            </div>
+
+            <!-- Live Synchronized Python Code View -->
+            <div class="rounded-2xl bg-slate-900/90 border border-slate-800 p-4 flex-grow flex flex-col justify-between shadow-lg">
+                <div>
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Live Code Execution Path</span>
+                        <span class="text-[11px] font-mono text-indigo-400">circuit_breaker.py</span>
+                    </div>
+                    <pre class="font-mono text-[11px] sm:text-xs bg-slate-950/90 p-3.5 rounded-xl border border-slate-800/90 overflow-x-auto leading-relaxed text-slate-300"><code><span id="codeLineInit" class="block px-1.5 rounded transition-colors">db_breaker = CircuitBreaker(fail_max=<span id="codeFailMax" class="text-indigo-400 font-bold">3</span>, reset_timeout=<span id="codeTimeout" class="text-amber-400 font-bold">10</span>)</span>
+<span class="block px-1.5 text-slate-500 mt-1">@db_breaker</span>
+<span id="codeLineCall" class="block px-1.5 rounded transition-colors">def unstable_database_call():</span>
+<span id="codeLineDb" class="block px-1.5 rounded transition-colors">    return query_primary_db()  <span id="codeDbComment" class="text-rose-400"># Currently DOWN</span></span>
+
+<span class="block px-1.5 text-slate-500 mt-1">try:</span>
+<span id="codeLineTry" class="block px-1.5 rounded transition-colors">    result = unstable_database_call()</span>
+<span id="codeLineOpen" class="block px-1.5 rounded transition-colors">except pybreaker.CircuitBreakerError:</span>
+<span id="codeLineFallback1" class="block px-1.5 rounded transition-colors">    return fallback_handler()  <span class="text-amber-400"># Fast-Fail Cache</span></span>
+<span id="codeLineConnErr" class="block px-1.5 rounded transition-colors">except requests.ConnectionError:</span>
+<span id="codeLineFallback2" class="block px-1.5 rounded transition-colors">    return fallback_handler()  <span class="text-rose-400"># Count +1 Fail</span></span></code></pre>
+                </div>
+                <p class="text-[11px] text-slate-400 mt-3 leading-relaxed">
+                    Notice how when <strong class="text-amber-400">OPEN</strong>, <code class="text-slate-200">unstable_database_call()</code> is bypassed completely—protecting your database from overload while serving instant cached responses.
+                </p>
+            </div>
+
+        </div>
+    </main>
+
+    <!-- Toast / Notification Container -->
+    <div id="toastContainer" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+    <script>
+        /**
+         * ============================================================================
+         * CIRCUIT BREAKER ENGINE & HTML5 CANVAS SIMULATOR
+         * ============================================================================
+         */
+
+        // --- State Definitions ---
+        const STATES = {
+            CLOSED: 'CLOSED',
+            OPEN: 'OPEN',
+            HALF_OPEN: 'HALF-OPEN'
+        };
+
+        // Max lines kept in the execution console (oldest lines drop off)
+        const LOG_MAX_LINES = 200;
+
+        // Max packets in flight at once (defense-in-depth; steady state is ~2)
+        const MAX_PACKETS = 100;
+
+        // Max rows kept in the state timeline (oldest rows drop off)
+        const TIMELINE_MAX_ENTRIES = 50;
+
+        // --- Simulator Configuration & Runtime State ---
+        const sim = {
+            state: STATES.CLOSED,
+            failMax: 3,
+            resetTimeout: 10, // seconds
+            failCount: 0,
+            dbHealthy: false, // Starts DOWN just like the Python example so user can trip it immediately
+            openTimestamp: null,
+            remainingTime: 0,
+            autoTraffic: false,
+            autoTrafficInterval: null,
+            demoRunning: false,
+            demoCancelled: false,
+            soundEnabled: false,
+            stats: {
+                total: 0,
+                success: 0,
+                failed: 0,
+                blocked: 0,
+                trips: 0
+            },
+            packets: [], // Active animated network packets on canvas
+            ripples: [], // Visual shockwaves on nodes
+            attemptCounter: 0
+        };
+
+        // --- DOM Element References ---
+        const canvas = document.getElementById('simCanvas');
+        const ctx = canvas.getContext('2d');
+        const canvasContainer = document.getElementById('canvasContainer');
+
+        const els = {
+            headerStateBadge: document.getElementById('headerStateBadge'),
+            headerStateDot: document.getElementById('headerStateDot'),
+            headerStateText: document.getElementById('headerStateText'),
+            hudFailures: document.getElementById('hudFailures'),
+            hudTimer: document.getElementById('hudTimer'),
+            bannerTitle: document.getElementById('bannerTitle'),
+            bannerDesc: document.getElementById('bannerDesc'),
+            sendSingleBtn: document.getElementById('sendSingleBtn'),
+            autoTrafficBtn: document.getElementById('autoTrafficBtn'),
+            autoTrafficDot: document.getElementById('autoTrafficDot'),
+            autoTrafficLabel: document.getElementById('autoTrafficLabel'),
+            toggleDbBtn: document.getElementById('toggleDbBtn'),
+            dbStatusText: document.getElementById('dbStatusText'),
+            dbStatusIcon: document.getElementById('dbStatusIcon'),
+            dbToggleText: document.getElementById('dbToggleText'),
+            failMaxSlider: document.getElementById('failMaxSlider'),
+            failMaxVal: document.getElementById('failMaxVal'),
+            timeoutSlider: document.getElementById('timeoutSlider'),
+            timeoutVal: document.getElementById('timeoutVal'),
+            resetSimBtn: document.getElementById('resetSimBtn'),
+            runScriptedDemoBtn: document.getElementById('runScriptedDemoBtn'),
+            clearLogsBtn: document.getElementById('clearLogsBtn'),
+            consoleOutput: document.getElementById('consoleOutput'),
+            statTotal: document.getElementById('statTotal'),
+            statSuccess: document.getElementById('statSuccess'),
+            statFailed: document.getElementById('statFailed'),
+            statBlocked: document.getElementById('statBlocked'),
+            statSuccessRate: document.getElementById('statSuccessRate'),
+            statTrips: document.getElementById('statTrips'),
+            timelineList: document.getElementById('timelineList'),
+            clearTimelineBtn: document.getElementById('clearTimelineBtn'),
+            audioToggleBtn: document.getElementById('audioToggleBtn'),
+            audioIcon: document.getElementById('audioIcon'),
+            audioLabel: document.getElementById('audioLabel'),
+            codeFailMax: document.getElementById('codeFailMax'),
+            codeTimeout: document.getElementById('codeTimeout'),
+            codeDbComment: document.getElementById('codeDbComment')
+        };
+
+        // --- Procedural Sound Effects (Tone.js) ---
+        let synth = null;
+        function playSound(type) {
+            if (!sim.soundEnabled) return;
+            try {
+                if (!synth) {
+                    synth = new Tone.PolySynth(Tone.Synth).toDestination();
+                    synth.volume.value = -12;
+                }
+                if (Tone.context.state !== 'running') {
+                    Tone.start();
+                }
+                const now = Tone.now();
+                if (type === 'send') {
+                    synth.triggerAttackRelease('C5', '32n', now);
+                } else if (type === 'success') {
+                    synth.triggerAttackRelease(['E5', 'G5'], '16n', now);
+                } else if (type === 'error') {
+                    synth.triggerAttackRelease(['C3', 'F#3'], '8n', now);
+                } else if (type === 'trip') {
+                    synth.triggerAttackRelease(['G3', 'Eb3', 'C3'], '4n', now);
+                } else if (type === 'blocked') {
+                    synth.triggerAttackRelease('A4', '32n', now);
+                } else if (type === 'recover') {
+                    synth.triggerAttackRelease(['C5', 'E5', 'G5', 'C6'], '8n', now);
+                }
+            } catch (e) {
+                // Ignore audio errors if blocked by browser policy
+            }
+        }
+
+        // --- Logging Utility ---
+        function logConsole(message, type = 'info') {
+            const line = document.createElement('div');
+            const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+            let colorClass = 'text-slate-300';
+            if (type === 'event') colorClass = 'text-indigo-400 font-semibold';
+            if (type === 'error') colorClass = 'text-rose-400';
+            if (type === 'warn') colorClass = 'text-amber-400';
+            if (type === 'success') colorClass = 'text-emerald-400';
+            if (type === 'muted') colorClass = 'text-slate-500';
+
+            line.className = `${colorClass} break-words`;
+            line.innerHTML = `<span class="text-slate-600 select-none">[${time}]</span> ${message}`;
+            els.consoleOutput.appendChild(line);
+            // Keep the log bounded so long sessions don't grow the DOM forever
+            while (els.consoleOutput.children.length > LOG_MAX_LINES) {
+                els.consoleOutput.removeChild(els.consoleOutput.firstChild);
+            }
+            els.consoleOutput.scrollTop = els.consoleOutput.scrollHeight;
+        }
+
+        // --- Highlight Active Python Code Lines ---
+        // Auto-clears after 1.2s so the path reads like a debugger stepping
+        // through. The generation guard stops an older timer from wiping a
+        // newer highlight set by a later event.
+        let highlightGen = 0;
+        function highlightCode(lineIds) {
+            const gen = ++highlightGen;
+            const allIds = ['codeLineInit', 'codeLineCall', 'codeLineDb', 'codeLineTry', 'codeLineOpen', 'codeLineFallback1', 'codeLineConnErr', 'codeLineFallback2'];
+            allIds.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.classList.remove('bg-indigo-500/25', 'bg-rose-500/25', 'bg-amber-500/25', 'bg-emerald-500/25');
+            });
+
+            lineIds.forEach(({ id, color }) => {
+                const el = document.getElementById(id);
+                if (el) el.classList.add(color);
+            });
+
+            if (lineIds.length > 0) {
+                setTimeout(() => {
+                    if (gen === highlightGen) highlightCode([]);
+                }, 1200);
+            }
+        }
+
+        // --- State Timeline ---
+        // Newest entry on top; state changes, failure milestones and DB health
+        // flips all land here so packets, logs and states can be correlated.
+        const TIMELINE_COLORS = {
+            'CLOSED': '#10b981',
+            'OPEN': '#f43f5e',
+            'HALF-OPEN': '#f59e0b',
+            'FAIL': '#fb7185',
+            'INFO': '#818cf8'
+        };
+        function addTimelineEvent(label, key) {
+            const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            if (els.timelineList.querySelector('.timeline-empty')) {
+                els.timelineList.innerHTML = '';
+            }
+            const color = TIMELINE_COLORS[key] || TIMELINE_COLORS.INFO;
+            const row = document.createElement('div');
+            row.className = 'flex items-center gap-2';
+            row.innerHTML = `<span class="text-slate-600 select-none">[${time}]</span><span class="w-2 h-2 rounded-full shrink-0" style="background:${color}"></span><span class="font-bold shrink-0" style="color:${color}">${key}</span><span class="text-slate-400 truncate">${label}</span>`;
+            els.timelineList.prepend(row);
+            while (els.timelineList.children.length > TIMELINE_MAX_ENTRIES) {
+                els.timelineList.removeChild(els.timelineList.lastChild);
+            }
+        }
+        function clearTimeline() {
+            els.timelineList.innerHTML = '<div class="text-slate-500 timeline-empty">No state changes yet — send a request or run the demo.</div>';
+        }
+
+        // --- State Machine Transitions ---
+        function transitionTo(newState) {
+            const oldState = sim.state;
+            if (oldState === newState) return;
+
+            sim.state = newState;
+            logConsole(`[EVENT] Circuit state changed: ${oldState} → ${newState}`, 'event');
+
+            if (newState === STATES.OPEN) {
+                sim.openTimestamp = performance.now();
+                sim.remainingTime = sim.resetTimeout;
+                sim.stats.trips++;
+                playSound('trip');
+                addRipple('breaker', '#f43f5e');
+                addTimelineEvent(`Tripped at ${sim.failCount}/${sim.failMax} failures`, 'OPEN');
+            } else if (newState === STATES.HALF_OPEN) {
+                sim.openTimestamp = null;
+                sim.remainingTime = 0;
+                addRipple('breaker', '#f59e0b');
+                addTimelineEvent('Timeout elapsed — sending probe', 'HALF-OPEN');
+            } else if (newState === STATES.CLOSED) {
+                sim.failCount = 0;
+                sim.openTimestamp = null;
+                sim.remainingTime = 0;
+                playSound('recover');
+                addRipple('breaker', '#10b981');
+                addTimelineEvent('Probe succeeded — circuit closed', 'CLOSED');
+            }
+
+            updateUI();
+        }
+
+        // --- Update All UI Elements ---
+        function updateUI() {
+            // Header State Badge
+            els.headerStateText.textContent = sim.state;
+            els.headerStateBadge.className = 'px-4 py-2 rounded-xl border font-mono text-xs sm:text-sm font-bold tracking-wider uppercase flex items-center gap-2 transition-all duration-300 ';
+            els.headerStateDot.className = 'w-2.5 h-2.5 rounded-full animate-pulse ';
+
+            if (sim.state === STATES.CLOSED) {
+                els.headerStateBadge.className += 'bg-emerald-500/10 border-emerald-500/40 text-emerald-400 glow-emerald';
+                els.headerStateDot.className += 'bg-emerald-400';
+                els.bannerTitle.textContent = 'Circuit CLOSED (Normal Operation)';
+                els.bannerTitle.className = 'font-semibold text-emerald-400 mb-0.5';
+                els.bannerDesc.textContent = `Requests pass through to Primary DB. Trips to OPEN after ${sim.failMax} consecutive failures.`;
+            } else if (sim.state === STATES.OPEN) {
+                els.headerStateBadge.className += 'bg-rose-500/15 border-rose-500/50 text-rose-400 glow-rose';
+                els.headerStateDot.className += 'bg-rose-400';
+                els.bannerTitle.textContent = 'Circuit OPEN (Fast-Fail Protection Active)';
+                els.bannerTitle.className = 'font-semibold text-rose-400 mb-0.5';
+                els.bannerDesc.textContent = 'Primary DB calls are blocked immediately! Serving instant fallback responses until timeout expires.';
+            } else if (sim.state === STATES.HALF_OPEN) {
+                els.headerStateBadge.className += 'bg-amber-500/15 border-amber-500/50 text-amber-400 glow-amber';
+                els.headerStateDot.className += 'bg-amber-400';
+                els.bannerTitle.textContent = 'Circuit HALF-OPEN (Testing Recovery)';
+                els.bannerTitle.className = 'font-semibold text-amber-400 mb-0.5';
+                els.bannerDesc.textContent = 'Allowing a trial request through to test if the Primary DB has recovered.';
+            }
+
+            // HUD counters
+            els.hudFailures.textContent = `${sim.failCount} / ${sim.failMax}`;
+            els.hudFailures.className = sim.failCount > 0 ? 'text-rose-400' : 'text-slate-300';
+
+            if (sim.state === STATES.OPEN) {
+                els.hudTimer.textContent = `${sim.remainingTime.toFixed(1)}s`;
+                els.hudTimer.className = 'text-amber-400';
+            } else if (sim.state === STATES.HALF_OPEN) {
+                els.hudTimer.textContent = 'Probe Ready';
+                els.hudTimer.className = 'text-amber-300';
+            } else {
+                els.hudTimer.textContent = 'Idle';
+                els.hudTimer.className = 'text-slate-400';
+            }
+
+            // DB Health Button
+            if (sim.dbHealthy) {
+                els.dbStatusText.textContent = 'ONLINE (Healthy)';
+                els.dbStatusText.className = 'text-xs font-mono font-bold text-emerald-400';
+                els.dbStatusIcon.textContent = '🟢';
+                els.dbToggleText.textContent = 'Database is UP — Click to Break';
+                els.toggleDbBtn.className = 'w-full py-3 px-4 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-300 font-semibold text-sm transition flex items-center justify-between';
+                els.codeDbComment.textContent = '# Healthy (200 OK)';
+                els.codeDbComment.className = 'text-emerald-400';
+            } else {
+                els.dbStatusText.textContent = 'OFFLINE (Failing)';
+                els.dbStatusText.className = 'text-xs font-mono font-bold text-rose-400';
+                els.dbStatusIcon.textContent = '💥';
+                els.dbToggleText.textContent = 'Database is DOWN — Click to Recover';
+                els.toggleDbBtn.className = 'w-full py-3 px-4 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-rose-300 font-semibold text-sm transition flex items-center justify-between';
+                els.codeDbComment.textContent = '# ConnectionError!';
+                els.codeDbComment.className = 'text-rose-400';
+            }
+
+            // Stats
+            els.statTotal.textContent = sim.stats.total;
+            els.statSuccess.textContent = sim.stats.success;
+            els.statFailed.textContent = sim.stats.failed;
+            els.statBlocked.textContent = sim.stats.blocked;
+            els.statTrips.textContent = sim.stats.trips;
+            els.statSuccessRate.textContent = sim.stats.total > 0
+                ? `${Math.round((sim.stats.success / sim.stats.total) * 100)}%`
+                : '—';
+
+            // Code numbers
+            els.codeFailMax.textContent = sim.failMax;
+            els.codeTimeout.textContent = sim.resetTimeout;
+        }
+
+        // --- Core Request Simulation Logic ---
+        function dispatchRequest() {
+            // Packet cap: a dropped request never leaves the client, so it is
+            // neither counted nor queued. Steady state is ~2 in flight.
+            if (sim.packets.length >= MAX_PACKETS) {
+                logConsole(`[WARN] Packet limit reached (${MAX_PACKETS}) — request dropped, not queued.`, 'warn');
+                return;
+            }
+            sim.attemptCounter++;
+            sim.stats.total++;
+            const attemptId = sim.attemptCounter;
+            playSound('send');
+
+            // Spawn packet from Client -> Circuit Breaker
+            sim.packets.push({
+                id: attemptId,
+                stage: 'to_breaker', // 'to_breaker' | 'to_db' | 'to_cache' | 'return_client'
+                progress: 0,
+                speed: 0.045,
+                color: '#818cf8', // indigo
+                outcome: null // 'success' | 'db_error' | 'fast_fail'
+            });
+
+            updateUI();
+        }
+
+        // Called when a packet arrives at the Circuit Breaker node
+        function evaluateAtBreaker(packet) {
+            // Check if OPEN timeout has elapsed just in case
+            if (sim.state === STATES.OPEN) {
+                // Fast-Fail immediately!
+                sim.stats.blocked++;
+                packet.stage = 'to_cache';
+                packet.progress = 0;
+                packet.color = '#f59e0b'; // amber
+                packet.outcome = 'fast_fail';
+
+                playSound('blocked');
+                addRipple('breaker', '#f59e0b');
+                logConsole(`Attempt #${packet.id}: <span class="text-amber-400 font-bold">CircuitBreakerError</span> → Fast-Fail! Using cached fallback.`, 'warn');
+                highlightCode([
+                    { id: 'codeLineTry', color: 'bg-amber-500/25' },
+                    { id: 'codeLineOpen', color: 'bg-amber-500/25' },
+                    { id: 'codeLineFallback1', color: 'bg-amber-500/25' }
+                ]);
+                updateUI();
+                return;
+            }
+
+            // If CLOSED or HALF-OPEN, forward request to Primary Database
+            packet.stage = 'to_db';
+            packet.progress = 0;
+            packet.color = sim.state === STATES.HALF_OPEN ? '#fbbf24' : '#38bdf8';
+            highlightCode([
+                { id: 'codeLineTry', color: 'bg-indigo-500/25' },
+                { id: 'codeLineCall', color: 'bg-indigo-500/25' },
+                { id: 'codeLineDb', color: 'bg-indigo-500/25' }
+            ]);
+        }
+
+        // Called when a packet reaches the Primary Database node
+        function evaluateAtDatabase(packet) {
+            if (sim.dbHealthy) {
+                // Database call succeeds!
+                sim.stats.success++;
+                packet.stage = 'return_client';
+                packet.progress = 0;
+                packet.color = '#10b981'; // emerald
+                packet.outcome = 'success';
+
+                addRipple('db', '#10b981');
+                logConsole(`Attempt #${packet.id}: <span class="text-emerald-400 font-bold">200 OK</span> → Fresh data retrieved from Primary DB.`, 'success');
+                highlightCode([
+                    { id: 'codeLineDb', color: 'bg-emerald-500/25' },
+                    { id: 'codeLineTry', color: 'bg-emerald-500/25' }
+                ]);
+
+                if (sim.state === STATES.HALF_OPEN) {
+                    logConsole(`[EVENT] Probe request succeeded in HALF-OPEN state! Resetting breaker.`, 'success');
+                    transitionTo(STATES.CLOSED);
+                } else if (sim.failCount > 0) {
+                    sim.failCount = 0;
+                    logConsole(`[INFO] Failure counter reset to 0 after successful call.`, 'muted');
+                }
+            } else {
+                // Database call fails!
+                sim.stats.failed++;
+                sim.failCount++;
+                packet.stage = 'to_cache';
+                packet.progress = 0;
+                packet.color = '#f43f5e'; // rose
+                packet.outcome = 'db_error';
+
+                playSound('error');
+                addRipple('db', '#f43f5e');
+                logConsole(`Attempt #${packet.id}: <span class="text-rose-400 font-bold">ConnectionError</span> (${sim.failCount}/${sim.failMax}) → Returning fallback.`, 'error');
+                addTimelineEvent(`Fail #${sim.failCount} — ConnectionError (${sim.failCount}/${sim.failMax})`, 'FAIL');
+                highlightCode([
+                    { id: 'codeLineDb', color: 'bg-rose-500/25' },
+                    { id: 'codeLineConnErr', color: 'bg-rose-500/25' },
+                    { id: 'codeLineFallback2', color: 'bg-rose-500/25' }
+                ]);
+
+                if (sim.state === STATES.HALF_OPEN) {
+                    logConsole(`[EVENT] Probe request FAILED in HALF-OPEN! Re-opening circuit immediately.`, 'error');
+                    transitionTo(STATES.OPEN);
+                } else if (sim.failCount >= sim.failMax) {
+                    transitionTo(STATES.OPEN);
+                }
+            }
+            updateUI();
+        }
+
+        // --- Visual Ripple Effects on Canvas ---
+        function addRipple(nodeKey, color) {
+            sim.ripples.push({
+                nodeKey,
+                color,
+                radius: 24,
+                alpha: 0.85
+            });
+        }
+
+        // --- Canvas Layout & Rendering ---
+        function resizeCanvas() {
+            const rect = canvasContainer.getBoundingClientRect();
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
+            // Reset any previous transform before scaling (setting width/height
+            // usually does this, but be explicit so resizes never compound)
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.scale(dpr, dpr);
+        }
+
+        function getNodePositions(width, height) {
+            const isMobile = width < 520;
+            return {
+                client: {
+                    x: isMobile ? width * 0.14 : width * 0.15,
+                    y: height * 0.46,
+                    label: 'Client App',
+                    sub: 'Caller',
+                    color: '#6366f1'
+                },
+                breaker: {
+                    x: width * 0.48,
+                    y: height * 0.46,
+                    label: 'Circuit Breaker',
+                    sub: sim.state,
+                    color: sim.state === STATES.CLOSED ? '#10b981' : (sim.state === STATES.OPEN ? '#f43f5e' : '#f59e0b')
+                },
+                db: {
+                    x: isMobile ? width * 0.84 : width * 0.83,
+                    y: height * 0.25,
+                    label: 'Primary DB',
+                    sub: sim.dbHealthy ? 'Healthy' : 'Offline',
+                    color: sim.dbHealthy ? '#10b981' : '#f43f5e'
+                },
+                cache: {
+                    x: isMobile ? width * 0.84 : width * 0.83,
+                    y: height * 0.72,
+                    label: 'Fallback Cache',
+                    sub: 'Degraded Mode',
+                    color: '#f59e0b'
+                }
+            };
+        }
+
+        function drawConnectionLine(x1, y1, x2, y2, color, dashed = false, active = true) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.strokeStyle = color;
+            ctx.lineWidth = active ? 3 : 2;
+            if (dashed) {
+                ctx.setLineDash([6, 6]);
+            }
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        function drawNode(pos, radius, iconText, badgeText = null) {
+            ctx.save();
+
+            // Outer glow
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, radius + 6, 0, Math.PI * 2);
+            ctx.fillStyle = pos.color + '18';
+            ctx.fill();
+
+            // Main circle body
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+            ctx.fillStyle = '#0f172a';
+            ctx.fill();
+            ctx.lineWidth = 3;
+            ctx.strokeStyle = pos.color;
+            ctx.stroke();
+
+            // Center Icon / Symbol
+            ctx.fillStyle = '#f8fafc';
+            ctx.font = 'bold 16px Inter, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(iconText, pos.x, pos.y);
+
+            // Node Title below
+            ctx.fillStyle = '#e2e8f0';
+            ctx.font = '600 12px Inter, sans-serif';
+            ctx.fillText(pos.label, pos.x, pos.y + radius + 16);
+
+            // Node Subtitle
+            ctx.fillStyle = pos.color;
+            ctx.font = '700 10px JetBrains Mono, monospace';
+            ctx.fillText(pos.sub, pos.x, pos.y + radius + 30);
+
+            // Optional Failure Counter Pills above Breaker (sized to fit the text,
+            // so "Fails: 10/10" never overflows the pill at fail_max 10)
+            if (badgeText) {
+                ctx.font = 'bold 10px JetBrains Mono, monospace';
+                const badgeWidth = Math.ceil(ctx.measureText(badgeText).width) + 16;
+                ctx.fillStyle = '#1e293b';
+                ctx.beginPath();
+                if (typeof ctx.roundRect === 'function') {
+                    ctx.roundRect(pos.x - badgeWidth / 2, pos.y - radius - 26, badgeWidth, 18, 6);
+                } else {
+                    ctx.rect(pos.x - badgeWidth / 2, pos.y - radius - 26, badgeWidth, 18);
+                }
+                ctx.fill();
+                ctx.strokeStyle = pos.color;
+                ctx.lineWidth = 1;
+                ctx.stroke();
+
+                ctx.fillStyle = '#f8fafc';
+                ctx.fillText(badgeText, pos.x, pos.y - radius - 17);
+            }
+
+            ctx.restore();
+        }
+
+        // Draw animated mechanical switch inside the Circuit Breaker node
+        function drawBreakerSwitch(breakerPos, radius) {
+            ctx.save();
+            const leftX = breakerPos.x - 16;
+            const rightX = breakerPos.x + 16;
+            const y = breakerPos.y;
+
+            // Contact terminals
+            ctx.fillStyle = breakerPos.color;
+            ctx.beginPath();
+            ctx.arc(leftX, y, 4, 0, Math.PI * 2);
+            ctx.arc(rightX, y, 4, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Switch arm angle based on state
+            let angle = 0; // CLOSED (flat bridge)
+            if (sim.state === STATES.OPEN) angle = -0.65; // OPEN (lifted up)
+            if (sim.state === STATES.HALF_OPEN) angle = -0.28; // HALF-OPEN (partially lowered)
+
+            ctx.translate(leftX, y);
+            ctx.rotate(angle);
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(32, 0);
+            ctx.strokeStyle = breakerPos.color;
+            ctx.lineWidth = 4;
+            ctx.lineCap = 'round';
+            ctx.stroke();
+            ctx.restore();
+
+            // If OPEN, draw circular countdown progress ring around the breaker
+            if (sim.state === STATES.OPEN && sim.resetTimeout > 0) {
+                const ratio = Math.max(0, sim.remainingTime / sim.resetTimeout);
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(breakerPos.x, breakerPos.y, radius + 11, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * ratio));
+                ctx.strokeStyle = '#f59e0b';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+                ctx.restore();
+            }
+        }
+
+        // --- Main Animation Loop ---
+        let lastFrameTime = performance.now();
+
+        function animate(now) {
+            // Clamp dt so a tab-switch or slow first frame can't teleport packets
+            const dt = Math.min((now - lastFrameTime) / 1000, 0.05);
+            lastFrameTime = now;
+
+            // 1. Update OPEN state countdown timer
+            if (sim.state === STATES.OPEN && sim.openTimestamp !== null) {
+                const elapsed = (now - sim.openTimestamp) / 1000;
+                sim.remainingTime = Math.max(0, sim.resetTimeout - elapsed);
+                els.hudTimer.textContent = `${sim.remainingTime.toFixed(1)}s`;
+
+                if (sim.remainingTime <= 0) {
+                    transitionTo(STATES.HALF_OPEN);
+                }
+            }
+
+            // 2. Clear Canvas
+            const rect = canvasContainer.getBoundingClientRect();
+            const width = rect.width;
+            const height = rect.height;
+            ctx.clearRect(0, 0, width, height);
+
+            const nodes = getNodePositions(width, height);
+            const nodeRadius = width < 520 ? 24 : 30;
+
+            // 3. Draw Connection Wires
+            // Client -> Breaker
+            drawConnectionLine(nodes.client.x, nodes.client.y, nodes.breaker.x, nodes.breaker.y, '#334155', false, true);
+
+            // Breaker -> Primary DB (Dashed & dimmed when OPEN)
+            const dbWireColor = sim.state === STATES.OPEN ? '#f43f5e44' : (sim.dbHealthy ? '#10b98166' : '#f43f5e88');
+            drawConnectionLine(nodes.breaker.x, nodes.breaker.y, nodes.db.x, nodes.db.y, dbWireColor, sim.state === STATES.OPEN, sim.state !== STATES.OPEN);
+
+            // When OPEN, draw an X over the severed Breaker -> DB wire so the
+            // block is obvious at a glance, even to a first-time viewer
+            if (sim.state === STATES.OPEN) {
+                const midX = (nodes.breaker.x + nodes.db.x) / 2;
+                const midY = (nodes.breaker.y + nodes.db.y) / 2;
+                const s = 9;
+                ctx.save();
+                ctx.beginPath();
+                ctx.moveTo(midX - s, midY - s);
+                ctx.lineTo(midX + s, midY + s);
+                ctx.moveTo(midX + s, midY - s);
+                ctx.lineTo(midX - s, midY + s);
+                ctx.strokeStyle = '#f43f5e';
+                ctx.lineWidth = 3;
+                ctx.lineCap = 'round';
+                ctx.stroke();
+                ctx.restore();
+            }
+
+            // Breaker -> Fallback Cache
+            drawConnectionLine(nodes.breaker.x, nodes.breaker.y, nodes.cache.x, nodes.cache.y, '#f59e0b55', true, true);
+
+            // Cache -> Client return path (subtle curve)
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(nodes.cache.x, nodes.cache.y);
+            ctx.quadraticCurveTo(width * 0.48, height * 0.92, nodes.client.x, nodes.client.y);
+            ctx.strokeStyle = '#33415566';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([4, 4]);
+            ctx.stroke();
+            ctx.restore();
+
+            // 4. Draw Ripples
+            for (let i = sim.ripples.length - 1; i >= 0; i--) {
+                const r = sim.ripples[i];
+                const targetNode = nodes[r.nodeKey];
+                if (targetNode) {
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.arc(targetNode.x, targetNode.y, r.radius, 0, Math.PI * 2);
+                    ctx.strokeStyle = r.color;
+                    ctx.globalAlpha = r.alpha;
+                    ctx.lineWidth = 2.5;
+                    ctx.stroke();
+                    ctx.restore();
+                }
+                r.radius += 60 * dt;
+                r.alpha -= 1.4 * dt;
+                if (r.alpha <= 0) sim.ripples.splice(i, 1);
+            }
+
+            // 5. Draw Nodes
+            drawNode(nodes.client, nodeRadius, 'APP');
+            drawNode(nodes.breaker, nodeRadius + 4, '', `Fails: ${sim.failCount}/${sim.failMax}`);
+            drawBreakerSwitch(nodes.breaker, nodeRadius + 4);
+            drawNode(nodes.db, nodeRadius, 'DB');
+            drawNode(nodes.cache, nodeRadius, 'CACHE');
+
+            // 6. Update & Draw Packets
+            for (let i = sim.packets.length - 1; i >= 0; i--) {
+                const p = sim.packets[i];
+                // Frame-rate independent: same travel time on 60Hz and 120Hz screens
+                p.progress += p.speed * dt * 60;
+
+                let startX, startY, endX, endY;
+
+                if (p.stage === 'to_breaker') {
+                    startX = nodes.client.x; startY = nodes.client.y;
+                    endX = nodes.breaker.x; endY = nodes.breaker.y;
+                } else if (p.stage === 'to_db') {
+                    startX = nodes.breaker.x; startY = nodes.breaker.y;
+                    endX = nodes.db.x; endY = nodes.db.y;
+                } else if (p.stage === 'to_cache') {
+                    startX = p.outcome === 'db_error' ? nodes.db.x : nodes.breaker.x;
+                    startY = p.outcome === 'db_error' ? nodes.db.y : nodes.breaker.y;
+                    endX = nodes.cache.x; endY = nodes.cache.y;
+                } else if (p.stage === 'return_client') {
+                    startX = p.outcome === 'success' ? nodes.db.x : nodes.cache.x;
+                    startY = p.outcome === 'success' ? nodes.db.y : nodes.cache.y;
+                    endX = nodes.client.x; endY = nodes.client.y;
+                }
+
+                const curX = startX + (endX - startX) * Math.min(1, p.progress);
+                const curY = startY + (endY - startY) * Math.min(1, p.progress);
+
+                // Draw glowing packet orb
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(curX, curY, 6, 0, Math.PI * 2);
+                ctx.fillStyle = p.color;
+                ctx.shadowColor = p.color;
+                ctx.shadowBlur = 12;
+                ctx.fill();
+                ctx.restore();
+
+                // Stage transitions when progress >= 1
+                if (p.progress >= 1) {
+                    if (p.stage === 'to_breaker') {
+                        evaluateAtBreaker(p);
+                    } else if (p.stage === 'to_db') {
+                        evaluateAtDatabase(p);
+                    } else if (p.stage === 'to_cache') {
+                        addRipple('cache', '#f59e0b');
+                        p.stage = 'return_client';
+                        p.progress = 0;
+                    } else if (p.stage === 'return_client') {
+                        addRipple('client', p.color);
+                        sim.packets.splice(i, 1);
+                    }
+                }
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        // --- Event Listeners & Controls ---
+
+        els.sendSingleBtn.addEventListener('click', () => {
+            dispatchRequest();
+        });
+
+        // Spacebar shortcut to send a request
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' && document.activeElement.tagName !== 'BUTTON' && document.activeElement.tagName !== 'INPUT') {
+                e.preventDefault();
+                dispatchRequest();
+            }
+        });
+
+        els.autoTrafficBtn.addEventListener('click', () => {
+            sim.autoTraffic = !sim.autoTraffic;
+            if (sim.autoTraffic) {
+                els.autoTrafficLabel.textContent = 'Auto Traffic: ON';
+                els.autoTrafficDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-ping';
+                els.autoTrafficBtn.classList.add('border-emerald-500/50', 'bg-emerald-500/10');
+                dispatchRequest();
+                sim.autoTrafficInterval = setInterval(dispatchRequest, 1300);
+            } else {
+                els.autoTrafficLabel.textContent = 'Auto Traffic: OFF';
+                els.autoTrafficDot.className = 'w-2 h-2 rounded-full bg-slate-500';
+                els.autoTrafficBtn.classList.remove('border-emerald-500/50', 'bg-emerald-500/10');
+                clearInterval(sim.autoTrafficInterval);
+            }
+        });
+
+        els.toggleDbBtn.addEventListener('click', () => {
+            sim.dbHealthy = !sim.dbHealthy;
+            logConsole(`[INFRA] Primary Database switched to: ${sim.dbHealthy ? '<span class="text-emerald-400">ONLINE</span>' : '<span class="text-rose-400">OFFLINE</span>'}`, 'event');
+            addTimelineEvent(sim.dbHealthy ? 'Primary DB back ONLINE' : 'Primary DB taken OFFLINE', 'INFO');
+            updateUI();
+        });
+
+        els.failMaxSlider.addEventListener('input', (e) => {
+            sim.failMax = parseInt(e.target.value, 10);
+            els.failMaxVal.textContent = `${sim.failMax} failure${sim.failMax > 1 ? 's' : ''}`;
+            if (sim.state === STATES.CLOSED && sim.failCount >= sim.failMax) {
+                transitionTo(STATES.OPEN);
+            }
+            updateUI();
+        });
+
+        els.timeoutSlider.addEventListener('input', (e) => {
+            sim.resetTimeout = parseInt(e.target.value, 10);
+            els.timeoutVal.textContent = `${sim.resetTimeout} seconds`;
+            updateUI();
+        });
+
+        els.audioToggleBtn.addEventListener('click', () => {
+            sim.soundEnabled = !sim.soundEnabled;
+            els.audioIcon.textContent = sim.soundEnabled ? '🔊' : '🔇';
+            els.audioLabel.textContent = sim.soundEnabled ? 'Sound On' : 'Sound Off';
+            if (sim.soundEnabled) playSound('send');
+        });
+
+        els.clearLogsBtn.addEventListener('click', () => {
+            els.consoleOutput.innerHTML = '<div class="text-slate-500"># Console cleared.</div>';
+        });
+
+        els.clearTimelineBtn.addEventListener('click', clearTimeline);
+
+        function resetSimulation() {
+            if (sim.autoTraffic) els.autoTrafficBtn.click();
+            // A Reset during a demo cancels it; the demo's sleep checks pick
+            // this up and unwind through the finally block below.
+            sim.demoCancelled = true;
+            sim.state = STATES.CLOSED;
+            sim.failCount = 0;
+            // True "Reset All": back to the initial conditions, including the
+            // DB state and both sliders (a demo leaves timeout at 6s)
+            sim.dbHealthy = false;
+            sim.failMax = 3;
+            sim.resetTimeout = 10;
+            els.failMaxSlider.value = 3;
+            els.failMaxVal.textContent = '3 failures';
+            els.timeoutSlider.value = 10;
+            els.timeoutVal.textContent = '10 seconds';
+            sim.openTimestamp = null;
+            sim.remainingTime = 0;
+            sim.packets = [];
+            sim.ripples = [];
+            sim.attemptCounter = 0;
+            sim.stats = { total: 0, success: 0, failed: 0, blocked: 0, trips: 0 };
+            highlightCode([]);
+            clearTimeline();
+            logConsole('--- Simulation Reset ---', 'muted');
+            updateUI();
+        }
+
+        els.resetSimBtn.addEventListener('click', resetSimulation);
+
+        // Automated Python Script Walkthrough (Mirrors the user's exact Python snippet!)
+        els.runScriptedDemoBtn.addEventListener('click', async () => {
+            if (sim.demoRunning) return;
+            sim.demoRunning = true;
+            els.runScriptedDemoBtn.disabled = true;
+            els.runScriptedDemoBtn.classList.add('opacity-50', 'cursor-not-allowed');
+
+            const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+
+            try {
+                resetSimulation();
+                // resetSimulation() flags a cancel; the demo re-arms itself
+                // right after, so only a later Reset cancels this run.
+                sim.demoCancelled = false;
+                sim.dbHealthy = false;
+                sim.failMax = 3;
+                sim.resetTimeout = 6; // Slightly faster 6s timeout for smooth interactive watching
+                els.failMaxSlider.value = 3;
+                els.failMaxVal.textContent = '3 failures';
+                els.timeoutSlider.value = 6;
+                els.timeoutVal.textContent = '6 seconds';
+                updateUI();
+
+                logConsole('=== Starting Automated Python Script Demo ===', 'event');
+                await sleep(600);
+                if (sim.demoCancelled) return;
+
+                // 4 attempts while DB is down (trips on 3rd, fast-fails on 4th)
+                for (let i = 1; i <= 4; i++) {
+                    dispatchRequest();
+                    await sleep(1100);
+                    if (sim.demoCancelled) return;
+                }
+
+                logConsole('=== Waiting 6s for reset_timeout to transition to HALF-OPEN ===', 'warn');
+                await sleep(6300);
+                if (sim.demoCancelled) return;
+
+                // Recover DB and send 5th attempt
+                sim.dbHealthy = true;
+                updateUI();
+                logConsole('=== Primary DB Recovered! Sending Attempt #5 (Probe) ===', 'success');
+                await sleep(500);
+                if (sim.demoCancelled) return;
+                dispatchRequest();
+
+                await sleep(1200);
+                if (sim.demoCancelled) return;
+                logConsole('=== Demo Complete! Circuit is back to CLOSED ===', 'event');
+            } finally {
+                if (sim.demoCancelled) {
+                    logConsole('=== Demo cancelled by Reset ===', 'warn');
+                }
+                sim.demoRunning = false;
+                sim.demoCancelled = false;
+                els.runScriptedDemoBtn.disabled = false;
+                els.runScriptedDemoBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
+        });
+
+        // Handle Window Resize
+        window.addEventListener('resize', resizeCanvas);
+
+        // Initialize on Load
+        window.onload = function () {
+            resizeCanvas();
+            updateUI();
+            requestAnimationFrame(animate);
+        };
+    </script>
+</body>
+</html>
