@@ -18,6 +18,10 @@ with his photo.
   must become `github.com/Rionangelfire/circuit-breaker-simulator` (or the
   final repo name) once the repo exists. Do not record the closing frame
   until the repo is published, or drop the URL line for now.
+  **Update Nov 21, 2026, 16:40 CST: the repo IS published** —
+  `github.com/Rionangelfire/circuit-breaker-simulator`, live at
+  `https://rionangelfire.github.io/circuit-breaker-simulator/`. The
+  closing frame below now carries the real URL.
 - **Cutaway shots (3):** CLOSED → OPEN transition; fast-fail reroute to
   Fallback Cache; recovery OPEN → HALF-OPEN → CLOSED.
 
@@ -117,5 +121,5 @@ by Robert Bostick
 Interactive Resilience Engineering Lab
 
 GitHub:
-github.com/YOURUSERNAME/circuit-breaker-simulator
+github.com/Rionangelfire/circuit-breaker-simulator
 ```
